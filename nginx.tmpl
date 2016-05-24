@@ -1,5 +1,3 @@
-{{ $CurrentContainer := where $ "ID" .Docker.CurrentContainerID | first }}
-
 {{ define "upstream" }}
 	{{ if .Address }}
 		{{/* If we got the containers from swarm and this container's port is published to host, use host IP:PORT */}}
@@ -7,13 +5,13 @@
 			# {{ .Container.Node.Name }}/{{ .Container.Name }}
 			server {{ .Container.Node.Address.IP }}:{{ .Address.HostPort }};
 		{{/* If there is no swarm node or the port is not published on host, use container's IP:PORT */}}
-		{{ else if .Network }}
+		{{ else }}
 			# {{ .Container.Name }}
-			server {{ .Network.IP }}:{{ .Address.Port }};
+			server {{ .Address.IP }}:{{ .Address.Port }};
 		{{ end }}
-	{{ else if .Network }}
+	{{ else }}
 		# {{ .Container.Name }}
-		server {{ .Network.IP }} down;
+		server {{ .Container.IP }} down;
 	{{ end }}
 {{ end }}
 
@@ -77,24 +75,15 @@ server {
 upstream {{ $host }} {
 {{ range $container := $containers }}
 	{{ $addrLen := len $container.Addresses }}
-
-	{{ range $knownNetwork := $CurrentContainer.Networks }}
-		{{ range $containerNetwork := $container.Networks }}
-			{{ if eq $knownNetwork.Name $containerNetwork.Name }}
-				## Can be connect with "{{ $containerNetwork.Name }}" network
-
-				{{/* If only 1 port exposed, use that */}}
-				{{ if eq $addrLen 1 }}
-					{{ $address := index $container.Addresses 0 }}
-					{{ template "upstream" (dict "Container" $container "Address" $address "Network" $containerNetwork) }}
-				{{/* If more than one port exposed, use the one matching VIRTUAL_PORT env var, falling back to standard web port 80 */}}
-				{{ else }}
-					{{ $port := coalesce $container.Env.VIRTUAL_PORT "80" }}
-					{{ $address := where $container.Addresses "Port" $port | first }}
-					{{ template "upstream" (dict "Container" $container "Address" $address "Network" $containerNetwork) }}
-				{{ end }}
-			{{ end }}
-		{{ end }}
+	{{/* If only 1 port exposed, use that */}}
+	{{ if eq $addrLen 1 }}
+		{{ $address := index $container.Addresses 0 }}
+		{{ template "upstream" (dict "Container" $container "Address" $address) }}
+	{{/* If more than one port exposed, use the one matching VIRTUAL_PORT env var, falling back to standard web port 80 */}}
+	{{ else }}
+		{{ $port := coalesce $container.Env.VIRTUAL_PORT "80" }}
+		{{ $address := where $container.Addresses "Port" $port | first }}
+		{{ template "upstream" (dict "Container" $container "Address" $address) }}
 	{{ end }}
 {{ end }}
 }
@@ -104,9 +93,6 @@ upstream {{ $host }} {
 
 {{/* Get the VIRTUAL_PROTO defined by containers w/ the same vhost, falling back to "http" */}}
 {{ $proto := or (first (groupByKeys $containers "Env.VIRTUAL_PROTO")) "http" }}
-
-{{/* Get the HTTPS_METHOD defined by containers w/ the same vhost, falling back to "redirect" */}}
-{{ $https_method := or (first (groupByKeys $containers "Env.HTTPS_METHOD")) "redirect" }}
 
 {{/* Get the first cert name defined by containers w/ the same vhost */}}
 {{ $certName := (first (groupByKeys $containers "Env.CERT_NAME")) }}
@@ -121,18 +107,14 @@ upstream {{ $host }} {
 {{/* Use the cert specifid on the container or fallback to the best vhost match */}}
 {{ $cert := (coalesce $certName $vhostCert) }}
 
-{{ $is_https := (and (ne $cert "") (exists (printf "/etc/nginx/certs/%s.crt" $cert)) (exists (printf "/etc/nginx/certs/%s.key" $cert))) }}
+{{ if (and (ne $cert "") (exists (printf "/etc/nginx/certs/%s.crt" $cert)) (exists (printf "/etc/nginx/certs/%s.key" $cert))) }}
 
-{{ if $is_https }}
-
-{{ if eq $https_method "redirect" }}
 server {
 	server_name {{ $host }};
 	listen 80 {{ $default_server }};
 	access_log /var/log/nginx/access.log vhost;
 	return 301 https://$host$request_uri;
 }
-{{ end }}
 
 server {
 	server_name {{ $host }};
@@ -174,10 +156,7 @@ server {
                 {{ end }}
 	}
 }
-
-{{ end }}
-
-{{ if or (not $is_https) (eq $https_method "noredirect") }}
+{{ else }}
 
 server {
 	server_name {{ $host }};
@@ -204,7 +183,7 @@ server {
 	}
 }
 
-{{ if (and (not $is_https) (exists "/etc/nginx/certs/default.crt") (exists "/etc/nginx/certs/default.key")) }}
+{{ if (and (exists "/etc/nginx/certs/default.crt") (exists "/etc/nginx/certs/default.key")) }}
 server {
 	server_name {{ $host }};
 	listen 443 ssl http2 {{ $default_server }};
