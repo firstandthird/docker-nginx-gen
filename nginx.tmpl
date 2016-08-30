@@ -149,7 +149,8 @@ server {
                 {{ end }}
 	}
 }
-{{ else }}
+
+{{ end }}
 
 server {
 	server_name {{ $host }};
@@ -188,5 +189,4 @@ server {
 }
 {{ end }}
 
-{{ end }}
 {{ end }}
